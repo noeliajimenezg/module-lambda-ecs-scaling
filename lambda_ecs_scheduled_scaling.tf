@@ -1,136 +1,140 @@
-/* create IAM ROLE */
-resource "aws_iam_role" "lambda_ecs_scheduled_scaling" {
-  name = "lambda_ecs_scheduled_scaling"
+resource "aws_iam_role" "lambda-ecs-scheduled-scaling" {
+  name = "${var.prefix_region}-${var.prefix_env}-lambda-ecs-scheduled-scaling"
   path = "/"
-
-  assume_role_policy = <<POLICY
-{
-   "Version": "2012-10-17",
-   "Statement": [
-     {
-       "Effect": "Allow",
-       "Principal": {
-         "Service": "lambda.amazonaws.com"
-       },
-       "Action": "sts:AssumeRole"
-     }
-   ]
+  assume_role_policy = data.aws_iam_policy_document.lambda-assume-role-policy-doc.json
 }
-POLICY
+
+// Assume policy
+data "aws_iam_policy_document" "lambda-assume-role-policy-doc" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "sts:AssumeRole"
+    ]
+
+    principals {
+      type = "Service"
+      identifiers = [
+        "lambda.amazonaws.com"
+      ]
+    }
+  }
 }
 
 /* Policy attachements */
 resource "aws_iam_role_policy_attachment" "CloudWatchLogs-policy-attachment" {
   policy_arn = "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
-  role       = "${aws_iam_role.lambda_ecs_scheduled_scaling.name}"
+  role       = aws_iam_role.lambda-ecs-scheduled-scaling.name
 }
 
-resource "aws_iam_role_policy" "lambda_ecs_scheduled_scaling_policy" {
-  name = "lambda_ecs_scheduled_scaling_policy"
-  role = "${aws_iam_role.lambda_ecs_scheduled_scaling.name}"
 
-  policy = <<POLICY
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Effect": "Allow",
-            "Action": [
-                "ecs:ListServices",
-                "ecs:UpdateService",
-                "dynamodb:ListTables",
-                "ecs:DescribeServices",
-                "ecs:ListClusters"
-            ],
-            "Resource": "*"
-        },
-        {
-            "Effect": "Allow",
-            "Action": [
-                "dynamodb:DescribeTable",
-                "dynamodb:CreateTable",
-                "dynamodb:GetItem",
-                "dynamodb:PutItem",
-                "dynamodb:DeleteItem",
-                "dynamodb:UpdateItem"
-            ],
-            "Resource": "arn:aws:dynamodb:eu-west-1:*:table/services-desiredCount"
-        }
+data "aws_iam_policy_document" "lambda-ecs-scheduled-scaling-policy-doc" {
+  statement {
+    sid = "ecsAllow"
+    effect = "Allow"
+    actions = [
+      "ecs:ListServices",
+      "ecs:UpdateService",
+      "ecs:DescribeServices",
+      "ecs:ListClusters"
     ]
-}
-POLICY
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "dynamoDbAllow"
+    effect = "Allow"
+    actions = [
+      "dynamodb:ListTables",
+      "dynamodb:DescribeTable",
+      "dynamodb:CreateTable",
+      "dynamodb:GetItem",
+      "dynamodb:PutItem",
+      "dynamodb:DeleteItem",
+      "dynamodb:UpdateItem"
+    ]
+    resources = ["arn:aws:dynamodb:${var.aws_region}:*:table/services-desiredCount"]
+  }
 }
 
-/* Lambda function */
+resource "aws_iam_role_policy" "lambda-ecs-scheduled-scaling-policy" {
+  name = "${var.prefix_region}-${var.prefix_env}-lambd-ecs-scheduled-scaling-policy"
+  role       = aws_iam_role.lambda-ecs-scheduled-scaling.name
+  policy = data.aws_iam_policy_document.lambda-ecs-scheduled-scaling-policy-doc.json
+}
 
-data "archive_file" "source" {
+// Convert *.py to .zip because AWS Lambda need .zip
+data "archive_file" "lambda-code" {
   type        = "zip"
-  source_file = "${path.module}/lambda_function.py"
-  output_path = "${path.module}/lambda_function.zip"
+  source_dir  = "../scripts/"
+  output_path = "../aws-ecs-scheduled-scaling-resources.zip"
 }
 
-resource "aws_lambda_function" "lambda-ecs_scheduled_scaling" {
-  description      = "Lambda function for scheduled ECS service scaling."
-  filename         = "${path.module}/lambda_function.zip"
-  function_name    = "ECSScheduledScaling"
-  handler          = "lambda_function.handler"
-  role             = "${aws_iam_role.lambda_ecs_scheduled_scaling.arn}"
+// Lambda function
+resource "aws_lambda_function" "lambda-ecs-scheduled-scaling" {
+  description      = "Lambda function for scheduled ECS service scaling"
+  filename         = data.archive_file.lambda-code.output_path
+  function_name    = "${var.prefix_region}-${var.prefix_env}-ecs-scheduled-scaling"
+  handler          = "lambda_function_ecs_scaling.handler"
+  role             = aws_iam_role.lambda-ecs-scheduled-scaling.arn
   runtime          = "python3.7"
-  source_code_hash = "${data.archive_file.source.output_base64sha256}"
+  source_code_hash = data.archive_file.lambda-code.output_base64sha256
   timeout          = "900"
 
   environment {
     variables = {
-      ECS_CLUSTER = "${var.ecs_cluster}"
+      ECS_CLUSTER = "${var.prefix_region}-${var.prefix_env}-${var.fargate_cluster_name}"
+      AWS_REGION_ENTRY  = var.aws_region
     }
   }
 }
 
-/* CloudWatch */
-resource "aws_cloudwatch_event_rule" "event_rule-downscaling" {
-  description         = "trigger scheduled ECS downscaling"
+// CloudWatch events
+resource "aws_cloudwatch_event_rule" "event-rule-downscaling" {
+  description         = "Trigger scheduled ECS downscaling"
   name                = "ECSScheduledScaling-Down"
-  schedule_expression = "${var.ecs_scheduled_downscaling_expression}"
+  schedule_expression = var.ecs_scheduled_downscaling_expression
 }
 
-resource "aws_cloudwatch_event_rule" "event_rule-upscaling" {
-  description         = "trigger scheduled ECS upscaling"
+resource "aws_cloudwatch_event_rule" "event-rule-upscaling" {
+  description         = "Trigger scheduled ECS upscaling"
   name                = "ECSScheduledScaling-Up"
-  schedule_expression = "${var.ecs_scheduled_upscaling_expression}"
+  schedule_expression = var.ecs_scheduled_upscaling_expression
 }
 
-resource "aws_cloudwatch_event_target" "event_target-downscaling" {
-  arn       = "${aws_lambda_function.lambda-ecs_scheduled_scaling.arn}"
-  rule      = "${aws_cloudwatch_event_rule.event_rule-downscaling.name}"
-  target_id = "lambda-ecs_scheduled_scaling-downscaling"
+resource "aws_cloudwatch_event_target" "event-target-downscaling" {
+  arn       = aws_lambda_function.lambda-ecs-scheduled-scaling.arn
+  rule      = aws_cloudwatch_event_rule.event-rule-downscaling.name
+  target_id = "lambda-ecs-scheduled-scaling-downscaling"
 }
 
-resource "aws_cloudwatch_event_target" "event_target-upscaling" {
-  arn       = "${aws_lambda_function.lambda-ecs_scheduled_scaling.arn}"
-  rule      = "${aws_cloudwatch_event_rule.event_rule-upscaling.name}"
-  target_id = "lambda-ecs_scheduled_scaling-upscaling"
+resource "aws_cloudwatch_event_target" "event-target-upscaling" {
+  arn       = aws_lambda_function.lambda-ecs-scheduled-scaling.arn
+  rule      = aws_cloudwatch_event_rule.event-rule-upscaling.name
+  target_id = "lambda-ecs-scheduled-scaling-upscaling"
 }
 
-resource "aws_lambda_permission" "allow_cloudwatch_to_call_lambda-downscaling" {
+// Lambda permission  
+resource "aws_lambda_permission" "allow-cloudwatch-to-call-lambda-downscaling" {
   action        = "lambda:InvokeFunction"
-  function_name = "${aws_lambda_function.lambda-ecs_scheduled_scaling.function_name}"
+  function_name = aws_lambda_function.lambda-ecs-scheduled-scaling.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${aws_cloudwatch_event_rule.event_rule-downscaling.arn}"
+  source_arn    = aws_cloudwatch_event_rule.event-rule-downscaling.arn
   statement_id  = "AllowECSDownscalingFromCloudWatch"
 
   depends_on = [
-    "aws_lambda_function.lambda-ecs_scheduled_scaling",
+    aws_lambda_function.lambda-ecs-scheduled-scaling
   ]
 }
 
-resource "aws_lambda_permission" "allow_cloudwatch_to_call_lambda-upscaling" {
+resource "aws_lambda_permission" "allow-cloudwatch-to-call-lambda-upscaling" {
   action        = "lambda:InvokeFunction"
-  function_name = "${aws_lambda_function.lambda-ecs_scheduled_scaling.function_name}"
+  function_name = aws_lambda_function.lambda-ecs-scheduled-scaling.function_name
   principal     = "events.amazonaws.com"
-  source_arn    = "${aws_cloudwatch_event_rule.event_rule-upscaling.arn}"
+  source_arn    = aws_cloudwatch_event_rule.event-rule-upscaling.arn
   statement_id  = "AllowECSUpscalingFromCloudWatch"
 
   depends_on = [
-    "aws_lambda_function.lambda-ecs_scheduled_scaling",
+    aws_lambda_function.lambda-ecs-scheduled-scaling
   ]
 }
