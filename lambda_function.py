@@ -8,7 +8,7 @@ import sys
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key, Attr
 
-AWS_REGION = 'eu-west-1'
+AWS_REGION = os.getenv("AWS_REGION_ENTRY")
 CLUSTER = os.getenv("ECS_CLUSTER")
 DYNAMODB_TABLE = 'services-desiredCount'
 
@@ -58,7 +58,7 @@ def handler(event, context):
 
         for page in paginator.paginate(
                 cluster=CLUSTER,
-                launchType='EC2',
+                launchType='FARGATE',
                 schedulingStrategy='REPLICA'):
             services += page['serviceArns']
         return services
@@ -70,7 +70,8 @@ def handler(event, context):
         print('adding/updating desired count to dynamodb.')
         # get desiredCount
         for service in services:
-            short_name = service.split('/')[1]
+            cluster_name=service.split('/')[1]
+            short_name = service.split('/')[2]
             desired_count = ecs.describe_services(
                 cluster=CLUSTER,
                 services=[
@@ -90,6 +91,9 @@ def handler(event, context):
                     },
                     'desiredCount': {
                         'S': str(desired_count)
+                    },                    
+                    'clusterName': {
+                        'S': str(cluster_name)
                     }
                 }
             )
