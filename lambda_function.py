@@ -135,7 +135,7 @@ def handler(event, context):
                 TableName=DYNAMODB_TABLE
             )
             for service in services:
-                short_name = service.split('/')[1]
+                short_name = service.split('/')[2]
                 count = dynamodb.get_item(
                     TableName=DYNAMODB_TABLE,
                     Key={
