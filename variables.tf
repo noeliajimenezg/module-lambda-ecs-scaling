@@ -1,5 +1,21 @@
-variable "ecs_cluster" {
-  description = "The name of the ECS Cluster to scale"
+variable "aws_region" {
+  description = "Region of AWS Cloud"
+  default     = "eu-west-1" // UE (Ireland)
+}
+
+variable "prefix_region" {
+  description = "Prefix of the region for naming conventions"
+  default     = "eu"
+}
+
+variable "prefix_env" {
+  description = "Prefix of the environment for naming conventions"
+  default     = "dev"
+}
+
+variable "fargate_cluster_name" {
+  description = "Name of the Fargate cluster (ECS)"
+  default     = ""
 }
 
 variable "ecs_scheduled_downscaling_expression" {
